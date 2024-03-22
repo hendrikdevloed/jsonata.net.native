@@ -25,6 +25,8 @@ namespace Jsonata.Net.Native.Eval
         }
 
         internal abstract JToken Invoke(List<JToken> args, JToken? context, EvaluationEnvironment env);
+        internal virtual Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
+            => Task.FromResult(Invoke(args, context, env));
 
         internal static JToken ReturnDoubleResult(double resultDouble)
         {

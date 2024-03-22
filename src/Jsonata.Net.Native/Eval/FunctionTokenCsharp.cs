@@ -123,7 +123,40 @@ namespace Jsonata.Net.Native.Eval
 			return result;
 		}
 
-		private object?[] BindFunctionArguments(List<JToken> args, JToken? context, EvaluationEnvironment env, out bool returnUndefined)
+        internal override async Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
+        {
+            object?[] parameters = this.BindFunctionArguments(args, context, env, out bool returnUndefined);
+            if (returnUndefined)
+            {
+                return EvalProcessor.UNDEFINED;
+            };
+
+            object? resultObj;
+            try
+            {
+                resultObj = this.m_methodInfo.Invoke(this.m_target, parameters);
+				if(resultObj is Task<object?> t)
+				{
+					resultObj = await t;
+				}
+            }
+            catch (TargetInvocationException ti)
+            {
+                if (ti.InnerException is JsonataException)
+                {
+                    ExceptionDispatchInfo.Capture(ti.InnerException).Throw();
+                }
+                else
+                {
+                    throw new Exception($"Error evaluating function '{this.m_functionName}': {(ti.InnerException?.Message ?? "?")}", ti);
+                }
+                throw;
+            }
+            JToken result = this.ConvertFunctionResult(resultObj);
+            return result;
+        }
+
+        private object?[] BindFunctionArguments(List<JToken> args, JToken? context, EvaluationEnvironment env, out bool returnUndefined)
 		{
 			try
 			{
