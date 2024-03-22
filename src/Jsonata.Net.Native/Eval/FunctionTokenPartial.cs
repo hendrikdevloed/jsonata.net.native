@@ -26,6 +26,13 @@ namespace Jsonata.Net.Native.Eval
             return result;
         }
 
+        internal override async Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
+        {
+            List<JToken> alignedArgs = this.AlignPartialFunctionArgs(args, context);
+            JToken result = await this.func.InvokeAsync(alignedArgs, null, env);
+            return result;
+        }
+
         private List<JToken> AlignPartialFunctionArgs(List<JToken> args, JToken? context)
         {
             int expectedArgsCount = this.ArgumentsCount;

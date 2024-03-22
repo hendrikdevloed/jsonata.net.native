@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Globalization;
 using Jsonata.Net.Native.Json;
+using System.Threading.Tasks;
+using Jsonata.Net.Native.JsonNet;
 
 namespace Jsonata.Net.Native.JsonNet
 {
@@ -167,6 +169,13 @@ namespace Jsonata.Net.Native.JsonNet
             return result.ToIndentedString();
         }
 
+        public static async Task<string> EvalNewtonsoftAsync(this JsonataQuery query, string dataJson)
+        {
+            Newtonsoft.Json.Linq.JToken data = Newtonsoft.Json.Linq.JToken.Parse(dataJson);
+            JToken result = await query.EvalAsync(JsonataExtensions.FromNewtonsoft(data));
+            return result.ToIndentedString();
+        }
+
         public static Newtonsoft.Json.Linq.JToken EvalNewtonsoft(this JsonataQuery query, Newtonsoft.Json.Linq.JToken data, Newtonsoft.Json.Linq.JObject? bindings = null)
         {
             EvaluationEnvironment env;
@@ -181,9 +190,29 @@ namespace Jsonata.Net.Native.JsonNet
             return EvalNewtonsoft(query, data, env);
         }
 
+        public static Task<Newtonsoft.Json.Linq.JToken> EvalNewtonsoftAsync(this JsonataQuery query, Newtonsoft.Json.Linq.JToken data, Newtonsoft.Json.Linq.JObject? bindings = null)
+        {
+            EvaluationEnvironment env;
+            if (bindings != null)
+            {
+                env = new EvaluationEnvironment((JObject)JsonataExtensions.FromNewtonsoft(bindings));
+            }
+            else
+            {
+                env = EvaluationEnvironment.DefaultEnvironment;
+            };
+            return EvalNewtonsoftAsync(query, data, env);
+        }
+
         public static Newtonsoft.Json.Linq.JToken EvalNewtonsoft(this JsonataQuery query, Newtonsoft.Json.Linq.JToken data, EvaluationEnvironment environment)
         {
             JToken result = query.Eval(JsonataExtensions.FromNewtonsoft(data), environment);
+            return result.ToNewtonsoft();
+        }
+
+        public static async Task<Newtonsoft.Json.Linq.JToken> EvalNewtonsoftAsync(this JsonataQuery query, Newtonsoft.Json.Linq.JToken data, EvaluationEnvironment environment)
+        {
+            JToken result = await query.EvalAsync(JsonataExtensions.FromNewtonsoft(data), environment);
             return result.ToNewtonsoft();
         }
 

@@ -70,6 +70,37 @@ namespace Jsonata.Net.Native.Eval
             return result;
         }
 
+        internal override async Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
+        {
+            List<(string, JToken)> alignedArgs;
+            if (this.signature != null)
+            {
+                List<JToken> processedArgs = this.signature.ValidateAndAlign(args, context);
+                if (processedArgs.Count != this.ArgumentsCount)
+                {
+                    throw new Exception("Failed to align args via signature");
+                }
+                alignedArgs = new List<(string, JToken)>(processedArgs.Count);
+                for (int i = 0; i < processedArgs.Count; ++i)
+                {
+                    alignedArgs.Add((this.paramNames[i], processedArgs[i]));
+                }
+            }
+            else
+            {
+                alignedArgs = this.AlignArgs(args);
+            }
+
+            EvaluationEnvironment executionEnv = EvaluationEnvironment.CreateNestedEnvironment(this.environment);
+            foreach ((string name, JToken value) in alignedArgs)
+            {
+                executionEnv.BindValue(name, value);
+            };
+
+            JToken result = await EvalProcessor.EvalAsync(this.body, this.context, executionEnv);
+            return result;
+        }
+
         private List<(string, JToken)> AlignArgs(List<JToken> args)
         {
             List<(string, JToken)> result = new List<(string, JToken)>(this.paramNames.Count);

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Jsonata.Net.Native.Json;
+using Jsonata.Net.Native.SystemTextJson;
 
 namespace Jsonata.Net.Native.SystemTextJson
 {
@@ -205,9 +206,21 @@ namespace Jsonata.Net.Native.SystemTextJson
             return result.ToIndentedString();
         }
 
+        public static async Task<string> EvalSystemTextJsonAsync(this JsonataQuery query, string dataJson)
+        {
+            JsonDocument doc = JsonDocument.Parse(dataJson);
+            JToken result = await query.EvalAsync(FromSystemTextJson(doc));
+            return result.ToIndentedString();
+        }
+
         public static JsonDocument EvalSystemTextJson(this JsonataQuery query, JsonDocument data)
         {
             return query.EvalSystemTextJson(data, EvaluationEnvironment.DefaultEnvironment);
+        }
+
+        public static Task<JsonDocument> EvalSystemTextJsonAsync(this JsonataQuery query, JsonDocument data)
+        {
+            return query.EvalSystemTextJsonAsync(data, EvaluationEnvironment.DefaultEnvironment);
         }
 
         public static JsonDocument EvalSystemTextJson(this JsonataQuery query, JsonDocument data, EvaluationEnvironment environment)
@@ -216,14 +229,31 @@ namespace Jsonata.Net.Native.SystemTextJson
             return result.ToSystemTextJson();
         }
 
+        public static async Task<JsonDocument> EvalSystemTextJsonAsync(this JsonataQuery query, JsonDocument data, EvaluationEnvironment environment)
+        {
+            JToken result = await query.EvalAsync(FromSystemTextJson(data), environment);
+            return result.ToSystemTextJson();
+        }
+
         public static JsonNode? EvalSystemTextJson(this JsonataQuery query, JsonNode data)
         {
             return query.EvalSystemTextJson(data, EvaluationEnvironment.DefaultEnvironment);
         }
 
+        public static Task<JsonNode?> EvalSystemTextJsonAsync(this JsonataQuery query, JsonNode data)
+        {
+            return query.EvalSystemTextJsonAsync(data, EvaluationEnvironment.DefaultEnvironment);
+        }
+
         public static JsonNode? EvalSystemTextJson(this JsonataQuery query, JsonNode data, EvaluationEnvironment environment)
         {
             JToken result = query.Eval(FromSystemTextJson(data), environment);
+            return result.ToSystemTextJsonNode();
+        }
+
+        public static async Task<JsonNode?> EvalSystemTextJsonAsync(this JsonataQuery query, JsonNode data, EvaluationEnvironment environment)
+        {
+            JToken result = await query.EvalAsync(FromSystemTextJson(data), environment);
             return result.ToSystemTextJsonNode();
         }
 

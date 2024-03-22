@@ -25,6 +25,13 @@ namespace Jsonata.Net.Native
             return result.ToIndentedString();
         }
 
+        public async Task<string> EvalAsync(string dataJson)
+        {
+            JToken data = JToken.Parse(dataJson, ParseSettings.DefaultSettings);
+            JToken result = await this.EvalAsync(data);
+            return result.ToIndentedString();
+        }
+
         public JToken Eval(JToken data, JObject? bindings = null)
         {
             EvaluationEnvironment env;
@@ -39,9 +46,28 @@ namespace Jsonata.Net.Native
             return EvalProcessor.EvaluateJson(this.m_node, data, env);
         }
 
+        public Task<JToken> EvalAsync(JToken data, JObject? bindings = null)
+        {
+            EvaluationEnvironment env;
+            if (bindings != null)
+            {
+                env = new EvaluationEnvironment(bindings);
+            }
+            else
+            {
+                env = EvaluationEnvironment.DefaultEnvironment;
+            };
+            return EvalProcessor.EvaluateJsonAsync(this.m_node, data, env);
+        }
+
         public JToken Eval(JToken data, EvaluationEnvironment environment)
         {
             return EvalProcessor.EvaluateJson(this.m_node, data, environment);
+        }
+
+        public Task<JToken> EvalAsync(JToken data, EvaluationEnvironment environment)
+        {
+            return EvalProcessor.EvaluateJsonAsync(this.m_node, data, environment);
         }
 
         public override string ToString()

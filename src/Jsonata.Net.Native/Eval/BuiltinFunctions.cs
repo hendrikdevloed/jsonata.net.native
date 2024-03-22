@@ -673,6 +673,259 @@ namespace Jsonata.Net.Native.Eval
             */
         }
 
+
+        /**
+        Signature: $replace(str, pattern, replacement [, limit])
+        Finds occurrences of pattern within str and replaces them with replacement.
+
+        If str is not specified, then the context value is used as the value of str. It is an error if str is not a string.
+
+        The pattern parameter can either be a string or a regular expression (regex). 
+            If it is a string, it specifies the substring(s) within str which should be replaced. 
+            If it is a regex, its is used to find .
+
+        The replacement parameter can either be a string or a function. 
+            If it is a string, it specifies the sequence of characters that replace the substring(s) that are matched by pattern. 
+            If pattern is a regex, then the replacement string can refer to the characters that were matched by the regex as well as any of the captured groups 
+            using a $ followed by a number N:
+                If N = 0, then it is replaced by substring matched by the regex as a whole.
+                If N > 0, then it is replaced by the substring captured by the Nth parenthesised group in the regex.
+                If N is greater than the number of captured groups, then it is replaced by the empty string.
+                A literal $ character must be written as $$ in the replacement string
+
+        If the replacement parameter is a function, then it is invoked for each match occurrence of the pattern regex. 
+        The replacement function must take a single parameter which will be the object structure of a regex match 
+            as described in the $match function; and must return a string.
+
+        The optional limit parameter, is a number that specifies the maximum number of replacements to make before stopping. 
+        The remainder of the input beyond this limit will be copied to the output unchanged.         
+         */
+        public static async Task<string> replaceAsync([PropagateUndefined] string str, JToken pattern, JToken replacement, [OptionalArgument(Int32.MaxValue)] int limit)
+        {
+            if (limit < 0)
+            {
+                throw new JsonataException("D3011", $"Fourth argument of {nameof(replace)} function must evaluate to a positive number");
+            }
+            else if (limit == 0)
+            {
+                return str;
+            }
+
+            switch (pattern.Type)
+            {
+            case JTokenType.String:
+                {
+                    string patternString = (string)pattern!;
+                    if (patternString == "")
+                    {
+                        throw new JsonataException("D3010", $"Second argument of {nameof(replace)} function cannot be an empty string");
+                    }
+                    else
+                    {
+                        if (replacement.Type != JTokenType.String)
+                        {
+                            throw new JsonataException("D3012", "Attempted to replace a matched string with a non-string value");
+                        };
+                        string replacementString = (string)replacement!;
+                        StringBuilder builder = new StringBuilder();
+                        int replacesCount = 0;
+                        int replaceStartAt = 0;
+                        while (true)
+                        {
+                            if (replacesCount >= limit)
+                            {
+                                break;
+                            };
+                            int pos = str.IndexOf(patternString, startIndex: replaceStartAt);
+                            if (pos < 0)
+                            {
+                                break;
+                            }
+                            else
+                            {
+                                if (pos > replaceStartAt)
+                                {
+                                    builder.Append(str.Substring(replaceStartAt, pos - replaceStartAt));
+                                }
+                                builder.Append(replacementString);
+                                ++replacesCount;
+                                replaceStartAt = pos + patternString.Length;
+                            };
+                        }
+                        if (replaceStartAt < str.Length)
+                        {
+                            builder.Append(str.Substring(replaceStartAt));
+                        };
+                        return builder.ToString();
+                    }
+                }
+                //break;
+            case JTokenType.Function:
+                {
+                    if (pattern is not FunctionTokenRegex regex)
+                    {
+                        throw new JsonataException("T0410", $"Argument 2 of function {nameof(replace)} should be either string or regex. Passed function {pattern.GetType().Name})");
+                    };
+
+                    MatchCollection matches = regex.regex.Matches(str);
+                    if (matches.Count == 0)
+                    {
+                        return str;
+                    };
+
+                    switch (replacement.Type)
+                    {
+                    case JTokenType.String:
+                        {
+                            string replacementString = (string)replacement!;
+                            StringBuilder builder = new StringBuilder();
+                            int replacesCount = 0;
+                            int replaceStartAt = 0;
+                            foreach (Match match in matches)
+                            {
+                                if (replacesCount >= limit)
+                                {
+                                    break;
+                                };
+                                if (match.Index < replaceStartAt)
+                                {
+                                    continue;   //overlapping matches
+                                }
+                                else if (match.Index > replaceStartAt)
+                                {
+                                    builder.Append(str.Substring(replaceStartAt, match.Index - replaceStartAt));
+                                }
+                                //TODO: use ProcessAppendReplacementStringForMatch instead of Result, but actually it's too ugly!
+                                //ProcessAppendReplacementStringForMatch(builder, match, replacementString);
+                                builder.Append(match.Result(replacementString));
+                                ++replacesCount;
+                                replaceStartAt = match.Index + match.Length;
+                            }
+                            if (replaceStartAt < str.Length)
+                            {
+                                builder.Append(str.Substring(replaceStartAt));
+                            };
+                            return builder.ToString();
+                        }
+                        //break;
+                    case JTokenType.Function:
+                        {
+                            FunctionToken replacementFunction = (FunctionToken)replacement;
+                            StringBuilder builder = new StringBuilder();
+                            EvaluationEnvironment env = EvaluationEnvironment.CreateEvalEnvironment(EvaluationEnvironment.DefaultEnvironment); //TODO: think of providing proper env. Maybe via a func param?
+                            int replacesCount = 0;
+                            int replaceStartAt = 0;
+                            foreach (Match match in matches)
+                            {
+                                if (replacesCount >= limit)
+                                {
+                                    break;
+                                };
+                                if (match.Index < replaceStartAt)
+                                {
+                                    continue;   //overlapping matches
+                                }
+                                else if (match.Index > replaceStartAt)
+                                {
+                                    builder.Append(str.Substring(replaceStartAt, match.Index - replaceStartAt));
+                                };
+                                JObject matchObject = FunctionTokenRegex.ConvertRegexMatch(match);
+                                JToken replacementToken = await EvalProcessor.InvokeFunctionAsync(replacementFunction, new List<JToken>() { matchObject }, null, env);
+                                if (replacementToken.Type != JTokenType.String)
+                                {
+                                    throw new JsonataException("D3012", "Attempted to replace a matched string with a non-string value");
+                                }
+                                builder.Append((string)replacementToken!);
+                                ++replacesCount;
+                                replaceStartAt = match.Index + match.Length;
+                            }
+                            if (replaceStartAt < str.Length)
+                            {
+                                builder.Append(str.Substring(replaceStartAt));
+                            };
+                            return builder.ToString();
+                        }
+                        //break;
+                    default:
+                        throw new JsonataException("T0410", $"Argument 3 of function {nameof(replace)} should be either string or function. Passed {replacement.Type} ({replacement.ToFlatString()})");
+                    };
+                }
+                //break;
+            default:
+                throw new JsonataException("T0410", $"Argument 2 of function {nameof(replace)} should be either string or regex. Passed {pattern.Type} ({pattern.ToFlatString()})");
+            };
+
+            /*
+            //see jsonata-js functions.js around line 440: "replacer = function (regexMatch)"
+            void ProcessAppendReplacementStringForMatch(StringBuilder builder, Match match, string replacement)
+            {
+                int maxDigits;
+                if (match.Groups.Count == 1)
+                {
+                    // no sub-matches; any $ followed by a digit will be replaced by an empty string
+                    maxDigits = 1;
+                }
+                else
+                {
+                    // max number of digits to parse following the $
+                    maxDigits = (int)Math.Floor(Math.Log(match.Groups.Count) * Math.Log10(Math.E)) + 1;
+                }
+
+
+                // scan forward, copying the replacement text into the substitute string
+                // and replace any occurrence of $n with the values matched by the regex
+                int position = 0;
+                int index = replacement.IndexOf('$', position);
+                while (index >= 0 && position < replacement.Length)
+                {
+                    builder.Append(replacement.Substring(position, index - position));
+                    position = index + 1;
+                    char dollarVal = replacement[position];
+                    if (dollarVal == '$')
+                    {
+                        // literal $
+                        builder.Append('$');
+                        ++position;
+                    }
+                    else if (dollarVal == '0')
+                    {
+                        builder.Append(match.Value);
+                        ++position;
+                    }
+                    else
+                    {
+                        
+                        index = Int32.TryParse(replacement.substring(position, position + maxDigits), 10);
+                        if (maxDigits > 1 && index > regexMatch.groups.length)
+                        {
+                            index = parseInt(replacement.substring(position, position + maxDigits - 1), 10);
+                        }
+                        if (!isNaN(index))
+                        {
+                            if (regexMatch.groups.length > 0)
+                            {
+                                var submatch = regexMatch.groups[index - 1];
+                                if (typeof submatch !== 'undefined')
+                                {
+                                    substitute += submatch;
+                                }
+                            }
+                            position += index.toString().length;
+                        }
+                        else
+                        {
+                            // not a capture group, treat the $ as literal
+                            substitute += '$';
+                        }
+                    }
+                    index = replacement.indexOf('$', position);
+                }
+                substitute += replacement.substring(position);
+                return substitute;
+            }
+            */
+        }
+
         /**
         Signature: $eval(expr [, context])
         Parses and evaluates the string expr which contains literal JSON or a JSONata expression using the current context as the context for evaluation.         
@@ -682,6 +935,17 @@ namespace Jsonata.Net.Native.Eval
         {
             JsonataQuery query = new JsonataQuery(expr);
             return query.Eval(context);    //TODO: think of using bindings from current environment (custom bindings). Also propagating time from parentevaluationEnvironment
+        }
+
+        /**
+        Signature: $eval(expr [, context])
+        Parses and evaluates the string expr which contains literal JSON or a JSONata expression using the current context as the context for evaluation.         
+        Optionally override the context by specifying the second parameter
+         */
+        public static Task<JToken> evalAsync([PropagateUndefined] string expr, [AllowContextAsValue] JToken context)
+        {
+            JsonataQuery query = new JsonataQuery(expr);
+            return query.EvalAsync(context);    //TODO: think of using bindings from current environment (custom bindings). Also propagating time from parentevaluationEnvironment
         }
 
         /**
@@ -1713,6 +1977,42 @@ namespace Jsonata.Net.Native.Eval
         }
 
         /**
+         Signature: $each(object, function)
+         Returns an array containing the values return by the function when applied to each key/value pair in the object.
+         The function parameter will get invoked with two arguments:
+            function(value, name)
+         where the value parameter is the value of each name/value pair in the object and name is its name. The name parameter is optional.* 
+         */
+        public static async Task<JArray> eachAsync([AllowContextAsValue][PropagateUndefined] JObject obj, FunctionToken function)
+        {
+            int argsCount = function.RequiredArgsCount;
+            Sequence result = new Sequence();
+            foreach (KeyValuePair<string, JToken> prop in obj.Properties)
+            {
+                List<JToken> args = new List<JToken>();
+                if (argsCount >= 1)
+                {
+                    args.Add(prop.Value);
+                };
+                if (argsCount >= 2)
+                {
+                    args.Add(new JValue(prop.Key));
+                };
+                JToken res = await EvalProcessor.InvokeFunctionAsync(
+                    function: function,
+                    args: args,
+                    context: null,
+                    env: null! //TODO: pass some real environment?
+                );
+                if (res.Type != JTokenType.Undefined)
+                {
+                    result.Add(res);
+                };
+            }
+            return result;
+        }
+
+        /**
          $error()
          Signature:$error(message)
          Deliberately throws an error with an optional message
@@ -1872,6 +2172,35 @@ namespace Jsonata.Net.Native.Eval
             bool result = Helpers.Booleanize(res);
             return result;
         }
+        
+
+        
+
+        private static async Task<bool> FilterAcceptsElementAsync(FunctionToken function, JToken element, int index, JArray array)
+        {
+            int filterArgsCount = function.RequiredArgsCount;
+            List<JToken> args = new List<JToken>();
+            if (filterArgsCount >= 1)
+            {
+                args.Add(element);
+            };
+            if (filterArgsCount >= 2)
+            {
+                args.Add(new JValue(index));
+            };
+            if (filterArgsCount >= 3)
+            {
+                args.Add(array);
+            };
+            JToken res = await EvalProcessor.InvokeFunctionAsync(
+                function: function,
+                args: args,
+                context: null,
+                env: null! //TODO: pass some real environment?
+            );
+            bool result = Helpers.Booleanize(res);
+            return result;
+        }
 
         /**
          Signature: $map(array, function)
@@ -1919,6 +2248,52 @@ namespace Jsonata.Net.Native.Eval
             return result;
         }
 
+        /**
+         Signature: $map(array, function)
+         Returns an array containing the results of applying the function parameter to each value in the array parameter.
+         The function that is supplied as the second parameter must have the following signature:
+            function(value [, index [, array]])
+         Each value in the input array is passed in as the first parameter in the supplied function. 
+         The index (position) of that value in the input array is passed in as the second parameter, if specified. 
+         The whole input array is passed in as the third parameter, if specified.
+         */
+        public static async Task<JToken> mapAsync([PropagateUndefined][PackSingleValueToSequence] JArray array, FunctionToken function)
+        {
+            int funcArgsCount = function.RequiredArgsCount;
+
+            Sequence result = new Sequence();
+
+            int index = 0;
+            foreach (JToken element in array.ChildrenTokens)
+            {
+                List<JToken> args = new List<JToken>();
+                if (funcArgsCount >= 1)
+                {
+                    args.Add(element);
+                };
+                if (funcArgsCount >= 2)
+                {
+                    args.Add(new JValue(index));
+                };
+                if (funcArgsCount >= 3)
+                {
+                    args.Add(array);
+                };
+                JToken res = await EvalProcessor.InvokeFunctionAsync(
+                    function: function,
+                    args: args,
+                    context: null,
+                    env: null! //TODO: pass some real environment?
+                );
+                if (res.Type != JTokenType.Undefined)
+                {
+                    result.Add(res);
+                };
+                ++index;
+            }
+            return result;
+        }
+
 
         /**
         Signature: $filter(array, function)
@@ -1936,6 +2311,32 @@ namespace Jsonata.Net.Native.Eval
             foreach (JToken element in array.ChildrenTokens)
             {
                 if (FilterAcceptsElement(function, element, index, array))
+                {
+                    result.Add(element);
+                }
+                ++index;
+            }
+            //return result.Simplify();
+            return result;
+        }
+
+
+        /**
+        Signature: $filter(array, function)
+        Returns an array containing only the values in the array parameter that satisfy the function predicate (i.e. function returns Boolean true when passed the value).
+        The function that is supplied as the second parameter must have the following signature:
+            function(value [, index [, array]])
+        Each value in the input array is passed in as the first parameter in the supplied function. 
+        The index (position) of that value in the input array is passed in as the second parameter, if specified. 
+        The whole input array is passed in as the third parameter, if specified.         
+         */
+        public static async Task<JToken> filterAsync([PropagateUndefined][PackSingleValueToSequence] JArray array, FunctionToken function)
+        {
+            Sequence result = new Sequence();
+            int index = 0;
+            foreach (JToken element in array.ChildrenTokens)
+            {
+                if (await FilterAcceptsElementAsync(function, element, index, array))
                 {
                     result.Add(element);
                 }
@@ -1965,6 +2366,48 @@ namespace Jsonata.Net.Native.Eval
             {
                 bool filterPassed = function != null ? 
                     FilterAcceptsElement(function, element, index, array) 
+                    : true;
+                if (filterPassed)
+                {
+                    if (result != null)
+                    {
+                        throw new JsonataException("D3138", "The $single() function expected exactly 1 matching result.  Instead it matched more.");
+                    }
+                    else
+                    {
+                        result = element;
+                    }
+                }
+                ++index;
+            }
+            
+            if (result == null)
+            {
+                throw new JsonataException("D3139", "The $single() function expected exactly 1 matching result.  Instead it matched 0.");
+            }
+            return result;
+        }
+
+        /**
+          Signature: $single(array, function)
+          Returns the one and only one value in the array parameter that satisfy the function predicate (i.e. function returns Boolean true when passed the value).
+          Throws an exception if the number of matching values is not exactly one.
+
+          The function that is supplied as the second parameter must have the following signature:
+            function(value [, index [, array]])
+
+          Each value in the input array is passed in as the first parameter in the supplied function. 
+          The index (position) of that value in the input array is passed in as the second parameter, if specified. 
+          The whole input array is passed in as the third parameter, if specified.         
+         */
+        public static async Task<JToken> singleAsync([PropagateUndefined][PackSingleValueToSequence] JArray array, [OptionalArgument(null)] FunctionToken? function)
+        {
+            JToken? result = null;
+            int index = 0;
+            foreach (JToken element in array.ChildrenTokens)
+            {
+                bool filterPassed = function != null ? 
+                    await FilterAcceptsElementAsync(function, element, index, array) 
                     : true;
                 if (filterPassed)
                 {
@@ -2038,6 +2481,67 @@ namespace Jsonata.Net.Native.Eval
                     args.Add(array);
                 };
                 accumulator = EvalProcessor.InvokeFunction(
+                    function: function,
+                    args: args,
+                    context: null,
+                    env: null! //TODO: pass some real environment?
+                );
+                ++index;
+            }
+            return accumulator;
+        }
+
+        /**
+          Signature: $reduce(array, function [, init])
+          Returns an aggregated value derived from applying the function parameter successively to each value in array in combination with the result of the previous application of the function.
+          The function must accept at least two arguments, and behaves like an infix operator between each value within the array. 
+          The signature of this supplied function must be of the form:
+            myfunc($accumulator, $value[, $index[, $array]])         
+          If the optional init parameter is supplied, then that value is used as the initial value in the aggregation (fold) process. 
+          If not supplied, the initial value is the first value in the array parameter.
+         */
+        public static async Task<JToken> reduceAsync([PropagateUndefined][PackSingleValueToSequence] JArray array, FunctionToken function, [OptionalArgument(null)] JToken? init)
+        {
+            JToken accumulator;
+            IEnumerable<JToken> elements;
+            int index;
+            if (init == null || init.Type == JTokenType.Undefined)
+            {
+                if (array.Count == 0)
+                {
+                    return EvalProcessor.UNDEFINED;
+                };
+                accumulator = array.ChildrenTokens[0];
+                elements = array.ChildrenTokens.Skip(1);
+                index = 1;
+            }
+            else
+            {
+                accumulator = init;
+                elements = array.ChildrenTokens;
+                index = 0;
+            };
+
+            int funcArgsCount = function.RequiredArgsCount;
+            if (funcArgsCount < 2)
+            {
+                throw new JsonataException("D3050", "The second argument of reduce function must be a function with at least two arguments");
+            }
+
+            foreach (JToken element in elements)
+            {
+                List<JToken> args = new List<JToken>(funcArgsCount);
+                args.Add(accumulator);
+                args.Add(element);
+                if (funcArgsCount >= 3)
+                {
+                    args.Add(new JValue(index));
+                };
+                if (funcArgsCount >= 4)
+                {
+                    args.Add(array);
+                };
+                accumulator = await EvalProcessor.InvokeFunctionAsync(
                     function: function,
                     args: args,
                     context: null,

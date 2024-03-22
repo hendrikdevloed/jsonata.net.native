@@ -28,6 +28,9 @@ namespace Jsonata.Net.Native.Eval
         internal virtual Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
             => Task.FromResult(Invoke(args, context, env));
 
+        internal virtual async Task<Task<JToken>> InvokeAsyncAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
+            => Task.FromResult(await InvokeAsync(args, context, env));
+
         internal static JToken ReturnDoubleResult(double resultDouble)
         {
             if (Double.IsNaN(resultDouble) || Double.IsInfinity(resultDouble))

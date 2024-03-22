@@ -42,9 +42,55 @@ namespace Jsonata.Net.Native.Eval
             return result;
 		}
 
+		internal static async Task<JToken> EvaluateJsonAsync(Node rootNode, JToken data, EvaluationEnvironment parentEnvironment)
+		{
+			EvaluationEnvironment environment = EvaluationEnvironment.CreateEvalEnvironment(parentEnvironment);
+
+			environment.BindValue("$", data);
+
+			if (data.Type == JTokenType.Array)
+            {
+				// if the input is a JSON array, then wrap it in a singleton sequence so it gets treated as a single input
+				JArray dataArr = new Sequence() { outerWrapper = true };
+				dataArr.Add(data);
+				data = dataArr;
+            }
+			JToken result = await EvalAsync(rootNode, data, environment);
+			if (result is Sequence seq)
+            {
+				//result = seq.GetValue();
+				if (seq.Count == 1 && !seq.keepSingletons)
+				{
+					result = seq.ChildrenTokens[0];
+				}
+			}
+
+			//to release unused tokens
+            result.ClearParent();
+
+            return result;
+		}
+
 		internal static JToken Eval(Node node, JToken input, EvaluationEnvironment env)
 		{
 			JToken result = EvalInternal(node, input, env);
+			if (result is Sequence sequence)
+            {
+				if (sequence.Count == 0)
+                {
+					return EvalProcessor.UNDEFINED;
+                }
+				else if (sequence.Count == 1 && !sequence.keepSingletons)
+                {
+					return sequence.ChildrenTokens[0];
+                }
+            };
+			return result;
+		}
+
+		internal static async Task<JToken> EvalAsync(Node node, JToken input, EvaluationEnvironment env)
+		{
+			JToken result = await EvalInternalAsync(node, input, env);
 			if (result is Sequence sequence)
             {
 				if (sequence.Count == 0)
@@ -130,6 +176,77 @@ namespace Jsonata.Net.Native.Eval
 			}
 		}
 
+		private static async Task<JToken> EvalInternalAsync(Node node, JToken input, EvaluationEnvironment env)
+		{
+			switch (node)
+			{
+			case StringNode stringNode:
+				return evalString(stringNode, input, env);
+			case NumberDoubleNode numberDoubleNode:
+				return evalNumber(numberDoubleNode, input, env);
+			case NumberIntNode numberIntNode:
+				return evalNumber(numberIntNode, input, env);
+			case BooleanNode booleanNode:
+				return evalBoolean(booleanNode, input, env);
+			case NullNode nullNode:
+				return evalNull(nullNode, input, env);
+			case RegexNode regexNode:
+				return evalRegex(regexNode, input, env);
+			case VariableNode variableNode:
+				return evalVariable(variableNode, input, env);
+			case NameNode nameNode:
+				return evalName(nameNode, input, env);
+			case ParentNode parentNode:
+				return evalParent(parentNode, input, env);
+			case PathNode pathNode:
+				return await evalPathAsync(pathNode, input, env);
+			case NegationNode negationNode:
+				return await evalNegationAsync(negationNode, input, env);
+			case RangeNode rangeNode:
+				return await evalRangeAsync(rangeNode, input, env);
+			case ArrayNode arrayNode:
+				return await evalArrayAsync(arrayNode, input, env);
+			case ObjectNode objectNode:
+				return await evalObjectAsync(objectNode, input, env);
+			case BlockNode blockNode:
+				return await evalBlockAsync(blockNode, input, env);
+			case ConditionalNode conditionalNode:
+				return await evalConditionalAsync(conditionalNode, input, env);
+			case AssignmentNode assignmentNode:
+				return await evalAssignmentAsync(assignmentNode, input, env);
+			case WildcardNode wildcardNode:
+				return evalWildcard(wildcardNode, input, env);
+			case DescendentNode descendentNode:
+				return evalDescendent(descendentNode, input, env);
+			case GroupNode groupNode:
+				return await evalGroupAsync(groupNode, input, env);
+			case PredicateNode predicateNode:
+				return await evalPredicateAsync(predicateNode, input, env);
+			case SortNode sortNode:
+				return await evalSortAsync(sortNode, input, env);
+			case LambdaNode lambdaNode:
+				return evalLambda(lambdaNode, input, env);
+			case ObjectTransformationNode transformationNode:
+				return evalObjectTransformation(transformationNode, input, env);
+			case PartialNode partialNode:
+				return await evalPartialAsync(partialNode, input, env);
+			case FunctionCallNode functionCallNode:
+				return await evalFunctionCallAsync(functionCallNode, input, env, null);
+			case FunctionApplicationNode functionApplicationNode:
+				return await evalFunctionApplicationAsync(functionApplicationNode, input, env);
+			case NumericOperatorNode numericOperatorNode:
+				return await evalNumericOperatorAsync(numericOperatorNode, input, env);
+			case ComparisonOperatorNode comparisonOperatorNode:
+				return await evalComparisonOperatorAsync(comparisonOperatorNode, input, env);
+			case BooleanOperatorNode booleanOperatorNode:
+				return await evalBooleanOperatorAsync(booleanOperatorNode, input, env);
+			case StringConcatenationNode stringConcatenationNode:
+				return await evalStringConcatenationAsync(stringConcatenationNode, input, env);
+			default:
+				throw new NotImplementedException($"eval: unexpected node type {node.GetType().Name}: {node}");
+			}
+		}
+
         private static JToken evalParent(ParentNode parentNode, JToken input, EvaluationEnvironment env)
         {
             if (input.parent == null)
@@ -150,6 +267,110 @@ namespace Jsonata.Net.Native.Eval
         private static JToken evalSort(SortNode sortNode, JToken input, EvaluationEnvironment env)
         {
 			JToken items = EvalProcessor.Eval(sortNode.expr, input, env);
+			switch (items.Type)
+            {
+			case JTokenType.Undefined:
+				return EvalProcessor.UNDEFINED;
+			case JTokenType.Array:
+				break;
+			default:
+				return items;
+            }
+			List<JToken> itemsList = ((JArray)items).ChildrenTokens.ToList();
+
+			try
+			{
+				itemsList.Sort(comparison);
+			}
+			catch (InvalidOperationException ex)
+            {
+				if (ex.InnerException != null)
+				{
+					ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+				}
+				else
+                {
+					throw;
+                }
+			}
+
+			JArray result = new JArray(itemsList.Count);
+			foreach (JToken item in itemsList)
+            {
+				result.Add(item);
+            }
+			return result;
+
+			int comparison(JToken a, JToken b)
+			{
+				foreach (SortNode.Term term in sortNode.terms)
+				{
+					//evaluate the sort term in the context of a
+					JToken aa = EvalProcessor.Eval(term.expr, a, env);
+					//evaluate the sort term in the context of b
+					JToken bb = EvalProcessor.Eval(term.expr, b, env);
+
+					// undefined should be last in sort order
+					if (aa.Type == JTokenType.Undefined)
+                    {
+						if (bb.Type == JTokenType.Undefined)
+						{
+							continue;
+						}
+						else
+                        {
+							return 1;
+                        }
+                    }
+					else if (bb.Type == JTokenType.Undefined)
+                    {
+						return -1;
+                    }
+
+					if (aa.Type != JTokenType.String && aa.Type != JTokenType.Integer && aa.Type != JTokenType.Float)
+                    {
+						throw new JsonataException("T2008", $"The expressions within an order-by clause must evaluate to numeric or string values. Got {aa.Type} ({aa.ToFlatString()})");
+                    };
+					if (bb.Type != JTokenType.String && bb.Type != JTokenType.Integer && bb.Type != JTokenType.Float)
+					{
+						throw new JsonataException("T2008", $"The expressions within an order-by clause must evaluate to numeric or string values. Got {bb.Type} ({bb.ToFlatString()})");
+					};
+
+					if ((aa.Type == JTokenType.String) != (bb.Type == JTokenType.String))
+                    {
+						throw new JsonataException("T2007", $"Type mismatch when comparing values {aa.Type}({aa.ToFlatString()}) and {bb.Type}({bb.ToFlatString()}) in order-by clause");
+                    }
+
+					int comp;
+
+					if (aa.Type == JTokenType.String)
+                    {
+						comp = String.Compare((string)aa!, (string)bb!);
+                    }
+					else
+                    {
+						double aValue = aa.Type == JTokenType.Float ? (double)aa : (long)aa;
+						double bValue = bb.Type == JTokenType.Float ? (double)bb : (long)bb;
+						comp = aValue.CompareTo(bValue);
+					};
+
+					if (term.dir == SortNode.Direction.Descending)
+					{
+						comp = -comp;
+					};
+
+					if (comp != 0)
+					{
+						return comp;
+					}
+				};
+				return 0;
+			}
+		}
+
+        private static async Task<JToken> evalSortAsync(SortNode sortNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken items = await EvalProcessor.EvalAsync(sortNode.expr, input, env);
 			switch (items.Type)
             {
 			case JTokenType.Undefined:
@@ -286,6 +507,31 @@ namespace Jsonata.Net.Native.Eval
 			return new FunctionTokenPartial(function, argsOrNulls);
 		}
 
+        private static async Task<JToken> evalPartialAsync(PartialNode partialNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken func = await EvalAsync(partialNode.func, input, env);
+
+			if (func is not FunctionToken function)
+			{
+				throw new JsonataException("T1008", $"Attempted to partially apply a non-function '{func.ToFlatString()}' got from '{partialNode.func}'");
+			};
+
+			List<JToken?> argsOrNulls = new List<JToken?>(partialNode.args.Count);
+			foreach (Node argNode in partialNode.args)
+            {
+				if (argNode is PlaceholderNode)
+                {
+					argsOrNulls.Add(null);
+                }
+				else
+                {
+					JToken arg = await EvalAsync(argNode, input, env);
+					argsOrNulls.Add(arg);
+                }
+            }
+			return new FunctionTokenPartial(function, argsOrNulls);
+		}
+
         private static JToken evalLambda(LambdaNode lambdaNode, JToken input, EvaluationEnvironment env)
         {
 			return new FunctionTokenLambda(
@@ -307,6 +553,23 @@ namespace Jsonata.Net.Native.Eval
 			else if (conditionalNode.expr2 != null)
             {
 				return Eval(conditionalNode.expr2, input, env);
+			}
+            else
+            {
+				return EvalProcessor.UNDEFINED;
+            }
+        }
+
+        private static async Task<JToken> evalConditionalAsync(ConditionalNode conditionalNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken condition = await EvalAsync(conditionalNode.predicate, input, env);
+			if (Helpers.Booleanize(condition))
+            {
+				return await EvalAsync(conditionalNode.expr1, input, env);
+            }
+			else if (conditionalNode.expr2 != null)
+            {
+				return await EvalAsync(conditionalNode.expr2, input, env);
 			}
             else
             {
@@ -377,10 +640,118 @@ namespace Jsonata.Net.Native.Eval
 			}
 		}
 
+        private static async Task<JToken> evalFunctionApplicationAsync(FunctionApplicationNode functionApplicationNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken lhs = await EvalAsync(functionApplicationNode.lhs, input, env);
+			if (functionApplicationNode.rhs is FunctionCallNode functionCallNode)
+            {
+				// this is a function _invocation_; invoke it with lhs expression as the first argument
+				return await evalFunctionCallAsync(functionCallNode, input, env, evalutedFirstArgFromApplication: lhs);
+			}
+			else
+            {
+				JToken rhs = await EvalAsync(functionApplicationNode.rhs, input, env);
+				if (rhs.Type != JTokenType.Function)
+                {
+					throw new JsonataException("T2006", "The right side of the function application operator ~> must be a function, got " + rhs.Type);
+                };
+				if (lhs.Type == JTokenType.Function)
+                {
+					// this is function chaining (func1 ~> func2)
+					// λ($f, $g) { λ($x){ $g($f($x)) } }
+
+					//original jsonata-js used following AST here:
+					// var chainAST = parser('function($f, $g) { function($x){ $g($f($x)) } }');
+					/* TODO: use pre-compiled AST, or at least parse chainAST just once
+					return new FunctionTokenLambda(
+						signature: null,
+						paramNames: new List<string>() { "x" },
+						body: new FunctionCallNode(
+							new 
+						),
+						context: input,
+						environment: env
+					);
+					*/
+					JsonataQuery chainAST = new JsonataQuery("function($f, $g) { function($x){ $g($f($x)) } }");
+					JToken chain = await chainAST.EvalAsync(EvalProcessor.UNDEFINED); //TODO: probably need to provide env as an environment here
+					if (chain.Type != JTokenType.Function)
+                    {
+						throw new Exception("should not happen 1");
+                    };
+					FunctionToken? chainFunction = chain as FunctionToken;
+					if (chainFunction == null)
+                    {
+						throw new Exception("should not happen 2");
+					}
+					JToken result = await InvokeFunctionAsync(chainFunction, new List<JToken>() { lhs, rhs }, null, env);
+					return result;
+				}
+				else
+                {
+					if (rhs.Type != JTokenType.Function)
+					{
+						throw new Exception("should not happen 3");
+					};
+					FunctionToken? chainFunction = rhs as FunctionToken;
+					if (chainFunction == null)
+					{
+						throw new Exception("should not happen 4, " + rhs.GetType().Name);
+					}
+					return await InvokeFunctionAsync(chainFunction, new List<JToken>() { lhs }, null, env);
+                }
+			}
+		}
+
         private static JToken evalRange(RangeNode rangeNode, JToken input, EvaluationEnvironment env)
         {
 			JToken lhs = Eval(rangeNode.lhs, input, env);
 			JToken rhs = Eval(rangeNode.rhs, input, env);
+
+			if (lhs.Type != JTokenType.Undefined && lhs.Type != JTokenType.Integer)
+            {
+				throw new JsonataException("T2003", $"The left side of the range operator (..) must evaluate to an integer, got {lhs.Type}");
+			}
+			else if (rhs.Type != JTokenType.Undefined && rhs.Type != JTokenType.Integer)
+			{
+				throw new JsonataException("T2004", $"The right side of the range operator (..) must evaluate to an integer, got {rhs.Type}");
+			}
+			else if (lhs.Type == JTokenType.Undefined || rhs.Type == JTokenType.Undefined)
+            {
+				// if either side is undefined, the result is undefined
+				return EvalProcessor.UNDEFINED;
+            };
+
+			long lhsValue = (long)lhs;
+			long rhsValue = (long)rhs;
+
+			if (lhsValue > rhsValue)
+			{
+				// if the lhs is greater than the rhs, return undefined
+				return EvalProcessor.UNDEFINED;
+			};
+
+			// limit the size of the array to ten million entries (1e7)
+			// this is an implementation defined limit to protect against
+			// memory and performance issues.  This value may increase in the future.
+			long size = rhsValue - lhsValue + 1;
+			if (size > 1e7)
+			{
+				throw new JsonataException("D2014", $"The size of the sequence allocated by the range operator (..) must not exceed 1e7.  Attempted to allocate {size}.");
+			};
+
+			JArray result = new Sequence();
+			for (long value = lhsValue; value <= rhsValue; ++value)
+			{
+				result.Add(new JValue(value));
+			}
+			return result;
+		}
+
+        private static async Task<JToken> evalRangeAsync(RangeNode rangeNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken lhs = await EvalAsync(rangeNode.lhs, input, env);
+			JToken rhs = await EvalAsync(rangeNode.rhs, input, env);
 
 			if (lhs.Type != JTokenType.Undefined && lhs.Type != JTokenType.Integer)
             {
@@ -429,6 +800,13 @@ namespace Jsonata.Net.Native.Eval
 			return value;
         }
 
+        private static async Task<JToken> evalAssignmentAsync(AssignmentNode assignmentNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken value = await EvalAsync(assignmentNode.value, input, env);
+			env.BindValue(assignmentNode.name, value);
+			return value;
+        }
+
         private static JToken evalBlock(BlockNode blockNode, JToken input, EvaluationEnvironment env)
         {
 			// create a new frame to limit the scope of variable assignments
@@ -441,6 +819,22 @@ namespace Jsonata.Net.Native.Eval
 			foreach (Node expression in blockNode.expressions)
             {
 				result = Eval(expression, input, localEnvironment);
+            }
+			return result;
+		}
+
+        private static async Task<JToken> evalBlockAsync(BlockNode blockNode, JToken input, EvaluationEnvironment env)
+        {
+			// create a new frame to limit the scope of variable assignments
+			// TODO, only do this if the post-parse stage has flagged this as required
+			EvaluationEnvironment localEnvironment = EvaluationEnvironment.CreateNestedEnvironment(env);
+
+			// invoke each expression in turn
+			// only return the result of the last one
+			JToken result = EvalProcessor.UNDEFINED;
+			foreach (Node expression in blockNode.expressions)
+            {
+				result = await EvalAsync(expression, input, localEnvironment);
             }
 			return result;
 		}
@@ -469,9 +863,38 @@ namespace Jsonata.Net.Native.Eval
             return InvokeFunction(function, args, context, env);
         }
 
+        private static async Task<JToken> evalFunctionCallAsync(FunctionCallNode functionCallNode, JToken input, EvaluationEnvironment env, JToken? evalutedFirstArgFromApplication)
+        {
+            JToken func = await EvalAsync(functionCallNode.func, input, env);
+            if (func is not FunctionToken function)
+            {
+                throw new JsonataException("T1006", $"Attempted to invoke a non-function '{func.ToFlatString()}' got from '{functionCallNode.func}'");
+            }
+
+            List<JToken> args = new List<JToken>();
+            if (evalutedFirstArgFromApplication != null)
+            {
+                args.Add(evalutedFirstArgFromApplication);
+            };
+            foreach (Node argNode in functionCallNode.args)
+            {
+                JToken argValue = await EvalAsync(argNode, input, env);
+                args.Add(argValue);
+            }
+
+            JToken? context = evalutedFirstArgFromApplication != null ? null : input;
+
+            return await InvokeFunctionAsync(function, args, context, env);
+        }
+
         internal static JToken InvokeFunction(FunctionToken function, List<JToken> args, JToken? context, EvaluationEnvironment env)
         {
 			return function.Invoke(args, context, env);
+        }
+
+        internal static Task<JToken> InvokeFunctionAsync(FunctionToken function, List<JToken> args, JToken? context, EvaluationEnvironment env)
+        {
+			return function.InvokeAsync(args, context, env);
         }
 
         private static JToken evalVariable(VariableNode variableNode, JToken input, EvaluationEnvironment env)
@@ -513,6 +936,49 @@ namespace Jsonata.Net.Native.Eval
 			foreach (Node filter in predicateNode.filters)
             {
 				itemsArray = evalFilter(filter, itemsArray, env);
+				if (itemsArray.Count == 0)
+                {
+					return EvalProcessor.UNDEFINED;
+                }
+            }
+
+			if (itemsArray is Sequence sequence)
+            {
+				return sequence.Simplify();
+            }
+			return itemsArray;
+        }
+
+        private static async Task<JToken> evalPredicateAsync(PredicateNode predicateNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken itemsToken = await EvalAsync(predicateNode.expr, input, env);
+			if (itemsToken.Type == JTokenType.Undefined)
+            {
+				return EvalProcessor.UNDEFINED;
+            };
+
+			JArray itemsArray;
+			if (itemsToken.Type == JTokenType.Array)
+            {
+				itemsArray = (JArray)itemsToken;
+
+				foreach (JToken item in itemsArray.ChildrenTokens)
+				{
+					if (item.parent == null)
+					{
+						item.parent = itemsToken.parent;
+					}
+				}
+            }
+            else
+            {
+				itemsArray = new Sequence();
+				itemsArray.Add(itemsToken);
+            };
+
+			foreach (Node filter in predicateNode.filters)
+            {
+				itemsArray = await evalFilterAsync(filter, itemsArray, env);
 				if (itemsArray.Count == 0)
                 {
 					return EvalProcessor.UNDEFINED;
@@ -612,10 +1078,103 @@ namespace Jsonata.Net.Native.Eval
 			}
         }
 
+        private static async Task<JArray> evalFilterAsync(Node filter, JArray itemsArray, EvaluationEnvironment env)
+        {
+			if (filter is NumberNode numberNode)
+			{
+				int index = numberNode.GetIntValue();
+				JToken resultToken = GetArrayElementByIndex(itemsArray, index);
+				if (resultToken.Type == JTokenType.Array)
+				{
+					return (JArray)resultToken;
+				}
+				else
+				{
+					Sequence result = new Sequence();
+					result.Add(resultToken);
+					return result;
+				}
+			}
+			else
+			{
+				Sequence result = new Sequence();
+				for (int index = 0; index < itemsArray.Count; ++index)
+				{
+					JToken item = itemsArray.ChildrenTokens[index];
+					JToken res = await EvalAsync(filter, item, env);
+					if (res.Type == JTokenType.Integer || res.Type == JTokenType.Float)
+					{
+						CheckAppendToken(result, item, index, res);
+					}
+					else if (Helpers.IsArrayOfNumbers(res))
+					{
+						foreach (JToken subtoken in ((JArray)res).ChildrenTokens)
+						{
+							CheckAppendToken(result, item, index, subtoken);
+						}
+					}
+					else if (Helpers.Booleanize(res))
+                    {
+						result.Add(item);
+                    }
+				}
+				return result;
+			}
+
+			int WrapArrayIndex(JArray array, int index)
+			{
+				if (index < 0)
+				{
+					index = array.Count + index;
+				};
+				return index;
+			}
+
+			JToken GetArrayElementByIndex(JArray array, int index)
+			{
+				index = WrapArrayIndex(array, index);
+				if (index < 0 || index >= array.Count)
+				{
+					return EvalProcessor.UNDEFINED;
+				}
+				else
+				{
+					return array.ChildrenTokens[index];
+				}
+			}
+
+			void CheckAppendToken(Sequence result, JToken item, int itemIndex, JToken indexToken)
+            {
+				if (indexToken.Type == JTokenType.Integer)
+				{
+					int indexTokenValue = WrapArrayIndex(itemsArray, (int)(long)indexToken);
+					if (indexTokenValue == itemIndex)
+					{
+						result.Add(item);
+					}
+				}
+				else if (indexToken.Type == JTokenType.Float)
+				{
+					int indexTokenValue = WrapArrayIndex(itemsArray, (int)(double)indexToken);
+					if (indexTokenValue == itemIndex)
+					{
+						result.Add(item);
+					}
+				}
+			}
+        }
+
         private static JToken evalStringConcatenation(StringConcatenationNode stringConcatenationNode, JToken input, EvaluationEnvironment env)
         {
             string lstr = stringify(Eval(stringConcatenationNode.lhs, input, env));
 			string rstr = stringify(Eval(stringConcatenationNode.rhs, input, env));
+			return new JValue(lstr + rstr);
+		}
+
+        private static async Task<JToken> evalStringConcatenationAsync(StringConcatenationNode stringConcatenationNode, JToken input, EvaluationEnvironment env)
+        {
+            string lstr = stringify(await EvalAsync(stringConcatenationNode.lhs, input, env));
+			string rstr = stringify(await EvalAsync(stringConcatenationNode.rhs, input, env));
 			return new JValue(lstr + rstr);
 		}
 
@@ -645,6 +1204,161 @@ namespace Jsonata.Net.Native.Eval
 		{
 			JToken lhs = Eval(comparisonOperatorNode.lhs, input, env);
 			JToken rhs = Eval(comparisonOperatorNode.rhs, input, env);
+			if (lhs.Type == JTokenType.Undefined || rhs.Type == JTokenType.Undefined)
+			{
+				switch (comparisonOperatorNode.op)
+				{
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonEqual:
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonNotEqual:
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonIn:
+					return new JValue(false);
+				default:
+					if (lhs.Type != JTokenType.Undefined && !IsComparable(lhs))
+					{
+						throw new JsonataException("T2010", $"Argument '{lhs}' of comparison is not comparable");
+					}
+					else if (rhs.Type != JTokenType.Undefined && !IsComparable(rhs))
+					{
+						throw new JsonataException("T2010", $"Argument '{rhs}' of comparison is not comparable");
+					}
+					else
+					{
+						return EvalProcessor.UNDEFINED;
+					}
+				}
+			};
+
+			if (lhs.Type == JTokenType.Integer && rhs.Type == JTokenType.Float)
+			{
+				lhs = new JValue((double)(int)lhs);
+			}
+			else if (rhs.Type == JTokenType.Integer && lhs.Type == JTokenType.Float)
+			{
+				rhs = new JValue((double)(int)rhs);
+			};
+
+			switch (comparisonOperatorNode.op)
+			{
+			case ComparisonOperatorNode.ComparisonOperator.ComparisonEqual:
+				return new JValue(JToken.DeepEquals(lhs, rhs));
+			case ComparisonOperatorNode.ComparisonOperator.ComparisonNotEqual:
+				return new JValue(!JToken.DeepEquals(lhs, rhs));
+			case ComparisonOperatorNode.ComparisonOperator.ComparisonIn:
+				{
+					if (rhs.Type == JTokenType.Array)
+					{
+						JArray rhsArray = (JArray)rhs;
+						foreach (JToken rhsSubtoken in rhsArray.ChildrenTokens)
+						{
+							if (JToken.DeepEquals(lhs, rhsSubtoken))
+							{
+								return new JValue(true);
+							}
+						}
+						return new JValue(false);
+					}
+					else
+					{
+						return new JValue(JToken.DeepEquals(lhs, rhs));
+					}
+				}
+			default:
+                {
+					if (!IsComparable(lhs))
+                    {
+						throw new JsonataException("T2010", $"Argument '{lhs}' of comparison is not comparable");
+                    }
+					else if (!IsComparable(rhs))
+                    {
+						throw new JsonataException("T2010", $"Argument '{rhs}' of comparison is not comparable");
+					}
+					else if (lhs.Type != rhs.Type)
+                    {
+						throw new JsonataException("T2009", $"Arguments '{lhs}' and '{rhs}' of comparison are of different types");
+					};
+
+					if (lhs.Type == JTokenType.String)
+                    {
+						return CompareStrings(comparisonOperatorNode.op, (string)lhs!, (string)rhs!);
+                    }
+					else if (lhs.Type == JTokenType.Integer)
+					{
+						return CompareInts(comparisonOperatorNode.op, (long)lhs, (long)rhs);
+					}
+					else if (lhs.Type == JTokenType.Float)
+					{
+						return CompareDoubles(comparisonOperatorNode.op, (double)lhs, (double)rhs);
+					}
+					else
+                    {
+						throw new Exception("Should not happen");
+                    }
+				}
+			}
+
+			bool IsComparable(JToken token)
+            {
+				return token.Type == JTokenType.Integer
+					|| token.Type == JTokenType.Float
+					|| token.Type == JTokenType.String;
+			}
+
+			JToken CompareDoubles(ComparisonOperatorNode.ComparisonOperator op, double lhs, double rhs)
+			{
+				switch (op)
+                {
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonLess:
+					return new JValue(lhs < rhs);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonLessEqual:
+					return new JValue(lhs <= rhs);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonGreater:
+					return new JValue(lhs > rhs);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonGreaterEqual:
+					return new JValue(lhs >= rhs);
+				default:
+					throw new Exception("Should not happen");
+				}
+			}
+
+			JToken CompareInts(ComparisonOperatorNode.ComparisonOperator op, long lhs, long rhs)
+			{
+				switch (op)
+				{
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonLess:
+					return new JValue(lhs < rhs);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonLessEqual:
+					return new JValue(lhs <= rhs);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonGreater:
+					return new JValue(lhs > rhs);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonGreaterEqual:
+					return new JValue(lhs >= rhs);
+				default:
+					throw new Exception("Should not happen");
+				}
+			}
+
+			JToken CompareStrings(ComparisonOperatorNode.ComparisonOperator op, string lhs, string rhs)
+			{
+				switch (op)
+				{
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonLess:
+					return new JValue(String.CompareOrdinal(lhs, rhs) < 0);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonLessEqual:
+					return new JValue(String.CompareOrdinal(lhs, rhs) <= 0);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonGreater:
+					return new JValue(String.CompareOrdinal(lhs, rhs) > 0);
+				case ComparisonOperatorNode.ComparisonOperator.ComparisonGreaterEqual:
+					return new JValue(String.CompareOrdinal(lhs, rhs) >= 0);
+				default:
+					throw new Exception("Should not happen");
+				}
+			}
+		}
+
+        private static async Task<JToken> evalComparisonOperatorAsync(ComparisonOperatorNode comparisonOperatorNode, JToken input, EvaluationEnvironment env)
+		{
+			JToken lhs = await EvalAsync(comparisonOperatorNode.lhs, input, env);
+			JToken rhs = await EvalAsync(comparisonOperatorNode.rhs, input, env);
 			if (lhs.Type == JTokenType.Undefined || rhs.Type == JTokenType.Undefined)
 			{
 				switch (comparisonOperatorNode.op)
@@ -827,10 +1541,47 @@ namespace Jsonata.Net.Native.Eval
 			return new JValue(result);
 		}
 
+        private static async Task<JToken> evalBooleanOperatorAsync(BooleanOperatorNode booleanOperatorNode, JToken input, EvaluationEnvironment env)
+        {
+			bool lhs = Helpers.Booleanize(await EvalAsync(booleanOperatorNode.lhs, input, env)); //here undefined works as false? see boolize() in jsonata-js
+			//short-cirquit the operators if possible:
+			switch (booleanOperatorNode.op)
+            {
+			case BooleanOperatorNode.BooleanOperator.BooleanAnd:
+				if (!lhs)
+                {
+					return new JValue(false);
+                }
+				break;
+			case BooleanOperatorNode.BooleanOperator.BooleanOr:
+				if (lhs)
+				{
+					return new JValue(true);
+				}
+				break;
+			};
+
+
+			bool rhs = Helpers.Booleanize(await EvalAsync(booleanOperatorNode.rhs, input, env));
+
+			bool result = booleanOperatorNode.op switch {
+				BooleanOperatorNode.BooleanOperator.BooleanAnd => lhs && rhs,
+				BooleanOperatorNode.BooleanOperator.BooleanOr => lhs || rhs,
+				_ => throw new ArgumentException($"Unexpected operator '{booleanOperatorNode.op}'")
+			};
+			return new JValue(result);
+		}
+
 		private static JToken evalGroup(GroupNode groupNode, JToken input, EvaluationEnvironment env)
         {
 			JToken items = Eval(groupNode.expr, input, env);
 			return evalObject(groupNode.objectNode, items, env);
+        }
+
+		private static async Task<JToken> evalGroupAsync(GroupNode groupNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken items = await EvalAsync(groupNode.expr, input, env);
+			return await evalObjectAsync(groupNode.objectNode, items, env);
         }
 
         private sealed class KeyIndex
@@ -918,9 +1669,98 @@ namespace Jsonata.Net.Native.Eval
 			return result;
         }
 
+        private static async Task<JToken> evalObjectAsync(ObjectNode objectNode, JToken input, EvaluationEnvironment env)
+        {
+			JArray inputArray;
+			if (input.Type == JTokenType.Array)
+            {
+				inputArray = (JArray)input;
+            }
+			else
+            {
+				Sequence inputSequence = new Sequence();
+				inputSequence.Add(input);
+				inputArray = inputSequence;
+			};
+
+            /* //does not seem to have any positive effects, but causes this issue https://github.com/mikhail-barg/jsonata.net.native/issues/9
+			 
+			// if the array is empty, add an undefined entry to enable literal JSON object to be generated
+			if (inputArray.Count == 0)
+			{
+				inputArray.Add(EvalProcessor.UNDEFINED);
+			}
+			*/
+
+
+            Dictionary<string, KeyIndex> itemsGroupedByKey = new Dictionary<string, KeyIndex>();
+
+			foreach (JToken item in inputArray.ChildrenTokens)
+			{
+				for (int pairIndex = 0; pairIndex < objectNode.pairs.Count; ++pairIndex)
+				{
+					Node keyNode = objectNode.pairs[pairIndex].Item1;
+					JToken keyToken = await EvalAsync(keyNode, item, env);
+					if (keyToken.Type != JTokenType.String)
+					{
+						throw new JsonataException("T1003", $"Object key should be String. Expression evaluated to {keyToken.Type} '{keyToken.ToFlatString()}'");
+					};
+					string key = (string)keyToken!;
+					if (itemsGroupedByKey.TryGetValue(key, out KeyIndex? keyIndex))
+                    {
+						if (keyIndex.pairIndex != pairIndex)
+                        {
+							// this key has been generated by another expression in this group
+							// when multiple key expressions evaluate to the same key, then error D1009 must be thrown
+							throw new JsonataException("D1009", $"Duplicate object key '{key}'");
+						}
+						else
+                        {
+							keyIndex.inputs.Add(item);
+                        }
+					}
+					else
+                    {
+						itemsGroupedByKey.Add(key, new KeyIndex(pairIndex, item));
+					}
+				}
+			}
+
+			JObject result = new JObject();
+			// iterate over the groups to evaluate the 'value' expression
+			foreach (KeyValuePair<string, KeyIndex> keyPair in itemsGroupedByKey)
+            {
+				string key = keyPair.Key;
+				Node rhs = objectNode.pairs[keyPair.Value.pairIndex].Item2;
+				JToken context = keyPair.Value.inputs;
+				JToken value = await EvalAsync(rhs, context, env);
+				if (value.Type != JTokenType.Undefined)
+                {
+					result.Add(key, value);
+                }
+			}
+			return result;
+        }
+
         private static JToken evalNegation(NegationNode negationNode, JToken input, EvaluationEnvironment env)
         {
 			JToken rhs = Eval(negationNode.rhs, input, env);
+			switch (rhs.Type)
+			{
+			case JTokenType.Undefined:
+				return EvalProcessor.UNDEFINED;
+			case JTokenType.Integer:
+				return new JValue(-(long)rhs);
+			case JTokenType.Float:
+				return new JValue(-(double)rhs);
+			default:
+				throw new JsonataException("D1002", $"Cannot negate a non-numeric value: {rhs}");
+			}
+        }
+
+        private static async Task<JToken> evalNegationAsync(NegationNode negationNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken rhs = await EvalAsync(negationNode.rhs, input, env);
 			switch (rhs.Type)
 			{
 			case JTokenType.Undefined:
@@ -938,6 +1778,48 @@ namespace Jsonata.Net.Native.Eval
         {
 			JToken lhs = Eval(numericOperatorNode.lhs, input, env);
 			JToken rhs = Eval(numericOperatorNode.rhs, input, env);
+			if (lhs.Type == JTokenType.Undefined || rhs.Type == JTokenType.Undefined)
+            {
+				return EvalProcessor.UNDEFINED;
+            }
+			else if (lhs.Type == JTokenType.Integer && rhs.Type == JTokenType.Integer)
+            {
+				if (numericOperatorNode.op == NumericOperatorNode.NumericOperator.NumericDivide)
+				{
+					//divide is still in double
+					return evalDoubleOperator((long)lhs, (long)rhs, numericOperatorNode.op);
+				}
+				else
+				{
+					return evalIntOperator((long)lhs, (long)rhs, numericOperatorNode.op);
+				}
+            }
+			else if (lhs.Type == JTokenType.Float && rhs.Type == JTokenType.Float)
+            {
+				return evalDoubleOperator((double)lhs, (double)rhs, numericOperatorNode.op);
+			}
+			else if (lhs.Type == JTokenType.Float && rhs.Type == JTokenType.Integer)
+			{
+				return evalDoubleOperator((double)lhs, (double)(long)rhs, numericOperatorNode.op);
+			}
+			else if (lhs.Type == JTokenType.Integer && rhs.Type == JTokenType.Float)
+			{
+				return evalDoubleOperator((double)(long)lhs, (double)rhs, numericOperatorNode.op);
+			}
+			else if (lhs.Type != JTokenType.Float && lhs.Type != JTokenType.Integer)
+            {
+				throw new JsonataException("T2001", $"The left side of the {NumericOperatorNode.OperatorToString(numericOperatorNode.op)} operator must evaluate to a number");
+			}
+			else
+            {
+				throw new JsonataException("T2002", $"The right side of the {NumericOperatorNode.OperatorToString(numericOperatorNode.op)} operator must evaluate to a number");
+			}
+		}
+
+        private static async Task<JToken> evalNumericOperatorAsync(NumericOperatorNode numericOperatorNode, JToken input, EvaluationEnvironment env)
+        {
+			JToken lhs = await EvalAsync(numericOperatorNode.lhs, input, env);
+			JToken rhs = await EvalAsync(numericOperatorNode.rhs, input, env);
 			if (lhs.Type == JTokenType.Undefined || rhs.Type == JTokenType.Undefined)
             {
 				return EvalProcessor.UNDEFINED;
@@ -1041,6 +1923,40 @@ namespace Jsonata.Net.Native.Eval
 			foreach (Node node in arrayNode.items)
             {
 				JToken res = Eval(node, input, env);
+				switch (res.Type)
+                {
+				case JTokenType.Undefined:
+					break;
+				case JTokenType.Array:
+					if (node is ArrayNode)
+                    {
+						result.Add(res);
+					}
+					else if (res.Type == JTokenType.Array
+						&& (!(res is Sequence sequence) || !sequence.keepSingletons)
+					)
+					{
+						result.AddRange(((JArray)res).ChildrenTokens);
+					}
+					else
+                    {
+						result.Add(res);
+                    }
+					break;
+				default:
+					result.Add(res);
+					break;
+				}
+			}
+			return result;
+        }
+
+		private static async Task<JToken> evalArrayAsync(ArrayNode arrayNode, JToken input, EvaluationEnvironment env)
+        {
+			JArray result = new ExplicitArray();
+			foreach (Node node in arrayNode.items)
+            {
+				JToken res = await EvalAsync(node, input, env);
 				switch (res.Type)
                 {
 				case JTokenType.Undefined:
@@ -1272,6 +2188,79 @@ namespace Jsonata.Net.Native.Eval
 			}
 			return array;
 		}
+       
+        private static async Task<JToken> evalPathAsync(PathNode node, JToken data, EvaluationEnvironment env)
+		{
+			if (node.steps.Count == 0)
+			{
+				return EvalProcessor.UNDEFINED;
+			}
+
+			// if the first step is a variable reference ($...), including root reference ($$),
+			//   then the path is absolute rather than relative
+			bool isVar = node.steps[0] switch {
+                VariableNode => true,
+                PredicateNode predicateNode => predicateNode.expr is VariableNode,
+                _ => false,
+            };
+
+			JArray array;
+			if (data.Type == JTokenType.Array && !isVar)
+            {
+				//already an array
+				array = (JArray)data;
+            }
+			else
+			{
+				// if input is not an array, make it so
+				Sequence sequence = new Sequence();
+				sequence.Add(data);
+				array = sequence;
+			};
+
+			int lastIndex = node.steps.Count - 1;
+			for (int stepIndex = 0; stepIndex < node.steps.Count; ++stepIndex)
+			{
+				Node step = node.steps[stepIndex];
+				// if the first step is an explicit array constructor, then just evaluate that (i.e. don't iterate over a context array)
+				if (stepIndex == 0 && step is ArrayNode arrayStepNode)
+				{
+					array = (JArray)await EvalAsync(arrayStepNode, array, env);
+				}
+				else
+				{
+					array = await evalPathStepAsync(step, array, env, stepIndex == lastIndex);
+				};
+
+				if (array.Count == 0)
+                {
+					break;
+                }
+			}
+
+			if (node.keepArrays)
+            {
+				if (array is Sequence arraySequence)
+				{
+					arraySequence.keepSingletons = true;
+				}
+				else if (array is ExplicitArray)
+				{
+					// if the array is explicitly constructed in the expression and marked to promote singleton sequences to array
+					Sequence resultSequence = new Sequence() {
+						keepSingletons = true
+					};
+					resultSequence.Add(array);
+					array = resultSequence;
+				}
+				else
+				{
+					//this case is not explicitly defined in jsonata-js, because only sequences are expected to have keepSingletons, but still..
+					//maybe we'll need to convert current array to sequence to set keepSingletons
+				}
+			}
+			return array;
+		}
 
 		private static JArray evalPathStep(Node step, JArray array, EvaluationEnvironment env, bool lastStep)
 		{
@@ -1279,6 +2268,58 @@ namespace Jsonata.Net.Native.Eval
 			foreach (JToken obj in array.ChildrenTokens)
 			{
 				JToken resultToken = Eval(step, obj, env);
+				if (resultToken.Type != JTokenType.Undefined)
+				{
+					result.Add(resultToken);
+				}
+			};
+
+			if (lastStep 
+				&& result.Count == 1 
+				&& result[0].Type == JTokenType.Array
+				&& !(result[0] is Sequence)
+			)
+			{
+				return (JArray)result[0];
+			};
+
+			// flatten the sequence
+			//see also http://docs.jsonata.org/processing#sequences
+			Sequence resultSequence = new Sequence();
+			bool isArrayConstructor = step is ArrayNode;
+			foreach (JToken resultToken in result)
+			{
+				if (resultToken.Type != JTokenType.Array   // <=  !Array.isArray(res)
+					|| isArrayConstructor				   // <=  res.cons
+				)
+				{
+					// it's not an array - just push into the result sequence
+					resultSequence.Add(resultToken);
+				}
+				else
+                {
+					// res is a sequence - flatten it into the parent sequence
+					JArray resultArray = (JArray)resultToken;
+					foreach (JToken subResult in resultArray.ChildrenTokens)
+					{
+						if (subResult.parent == null)
+						{
+							subResult.parent = resultArray.parent;
+						}
+                        resultSequence.Add(subResult);
+                    }
+				}
+			}
+
+			return resultSequence;
+		}
+
+		private static async Task<JArray> evalPathStepAsync(Node step, JArray array, EvaluationEnvironment env, bool lastStep)
+		{
+			List<JToken> result = new List<JToken>(array.Count);
+			foreach (JToken obj in array.ChildrenTokens)
+			{
+				JToken resultToken = await EvalAsync(step, obj, env);
 				if (resultToken.Type != JTokenType.Undefined)
 				{
 					result.Add(resultToken);

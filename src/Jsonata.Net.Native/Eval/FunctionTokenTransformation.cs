@@ -76,6 +76,54 @@ namespace Jsonata.Net.Native.Eval
 			};
 			return arg;
 		}
+
+        /**
+            The ~> operator is the operator for function chaining 
+            and passes the value on the left hand side to the function on the right hand side as its first argument. 
+        
+            The expression on the right hand side must evaluate to a function, 
+            hence the |...|...| syntax generates a function with one argument.         
+         */
+
+        internal override async Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
+        {
+			if (args.Count != this.ArgumentsCount)
+			{
+				throw new ApplicationException("Should not happen");
+			}
+
+			switch (args[0].Type)
+			{
+			case JTokenType.Undefined:
+				return EvalProcessor.UNDEFINED;
+			case JTokenType.Array:
+			case JTokenType.Object:
+				break;
+			default:
+				throw new JsonataException("T0410", $"Argument 1 of transform should be either Object or Array, got {args[0].Type}");
+			}
+
+
+			JToken arg = args[0].DeepClone();
+
+			JToken matches = await EvalProcessor.EvalAsync(this.pattern, arg, this.environment);
+			if (matches.Type != JTokenType.Undefined)
+			{
+				if (matches.Type != JTokenType.Array)
+				{
+					await this.ProcessItemAsync(matches);
+				}
+				else
+				{
+					JArray matchesArray = (JArray)matches;
+					foreach (JToken child in matchesArray.ChildrenTokens)
+					{
+						await this.ProcessItemAsync(child);
+					}
+				}
+			};
+			return arg;
+		}
 		private void ProcessItem(JToken item)
 		{
 			if (item.Type != JTokenType.Object)
@@ -104,6 +152,57 @@ namespace Jsonata.Net.Native.Eval
 			if (this.deletes != null)
 			{
 				JToken delete = EvalProcessor.Eval(this.deletes, item, this.environment);
+				if (delete.Type != JTokenType.Undefined)
+				{
+					switch (delete.Type)
+					{
+					case JTokenType.String:
+						this.Remove(srcObj, delete);
+						break;
+					case JTokenType.Array:
+						{
+							JArray deleteArray = (JArray)delete;
+							foreach (JToken child in deleteArray.ChildrenTokens)
+							{
+								this.Remove(srcObj, child);
+							}
+						}
+						break;
+					default:
+						throw new JsonataException("T2012", $"The delete clause of the transform expression must evaluate to a string or array of strings: {delete.Type} ({delete.ToFlatString()})");
+					}
+				}
+			}
+		}
+
+		private async Task ProcessItemAsync(JToken item)
+		{
+			if (item.Type != JTokenType.Object)
+			{
+				//TODO:? 
+				//throw new JsonataException("????", $"Update can be applied only to objects. Got {item.Type} ({item.ToStringFlat()})");
+				return;
+			};
+			JObject srcObj = (JObject)item;
+
+			//update
+			{
+				JToken update = await EvalProcessor.EvalAsync(this.updates, item, this.environment);
+				if (update.Type != JTokenType.Undefined)
+				{
+					if (update.Type != JTokenType.Object)
+					{
+						throw new JsonataException("T2011", $"The insert/update clause of the transform expression must evaluate to an object. Got {update.Type} ({update.ToFlatString()})");
+					};
+
+					srcObj.Merge((JObject)update);
+				}
+			}
+
+			//delete
+			if (this.deletes != null)
+			{
+				JToken delete = await EvalProcessor.EvalAsync(this.deletes, item, this.environment);
 				if (delete.Type != JTokenType.Undefined)
 				{
 					switch (delete.Type)
