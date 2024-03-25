@@ -5,6 +5,7 @@ using Jsonata.Net.Native.Json;
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Tasks;
 
 namespace BenchmarkApp
 {
@@ -43,6 +44,17 @@ namespace BenchmarkApp
             for (int i = 0; i < this.m_iterations; ++i)
             {
                 query.Eval(json);
+            }
+        }
+
+        [Benchmark]
+        public async Task ProcessNativeAsync()
+        {
+            Jsonata.Net.Native.JsonataQuery query = new Jsonata.Net.Native.JsonataQuery(this.m_query);
+            JToken json = JToken.Parse(this.m_data);
+            for (int i = 0; i < this.m_iterations; ++i)
+            {
+                await query.EvalAsync(json);
             }
         }
 
