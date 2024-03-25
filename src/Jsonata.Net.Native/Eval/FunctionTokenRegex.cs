@@ -57,6 +57,9 @@ namespace Jsonata.Net.Native.Eval
             return ConvertRegexMatch(match);
         }
 
+        internal override Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
+            => Task.FromResult(Invoke(args, context, env));
+
         internal static JObject ConvertRegexMatch(Match match)
         {
             JObject result = new JObject();

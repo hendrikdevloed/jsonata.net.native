@@ -1,10 +1,7 @@
 ﻿using Jsonata.Net.Native.Json;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Reflection;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace Jsonata.Net.Native.Eval
@@ -25,11 +22,7 @@ namespace Jsonata.Net.Native.Eval
         }
 
         internal abstract JToken Invoke(List<JToken> args, JToken? context, EvaluationEnvironment env);
-        internal virtual Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
-            => Task.FromResult(Invoke(args, context, env));
-
-        internal virtual async Task<Task<JToken>> InvokeAsyncAsync(List<JToken> args, JToken? context, EvaluationEnvironment env)
-            => Task.FromResult(await InvokeAsync(args, context, env));
+        internal abstract Task<JToken> InvokeAsync(List<JToken> args, JToken? context, EvaluationEnvironment env);
 
         internal static JToken ReturnDoubleResult(double resultDouble)
         {
