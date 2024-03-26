@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 using Jsonata.Net.Native.Json;
@@ -53,12 +55,12 @@ namespace Jsonata.Net.Native.Eval
         {
             switch (token.Type)
             {
-            case JTokenType.Float:
-                return (double)token;
-            case JTokenType.Integer:
-                return (double)(long)token;
-            default:
-                throw new Exception("Not a number " + token.ToFlatString());
+                case JTokenType.Float:
+                    return (double)token;
+                case JTokenType.Integer:
+                    return (double)(long)token;
+                default:
+                    throw new Exception("Not a number " + token.ToFlatString());
             }
         }
 
@@ -76,38 +78,38 @@ namespace Jsonata.Net.Native.Eval
 
             switch (value.Type)
             {
-            case JTokenType.Undefined:
-                return false;
-            case JTokenType.Array:
-                {
-                    JArray array = (JArray)value;
-                    if (array.Count == 0)
+                case JTokenType.Undefined:
+                    return false;
+                case JTokenType.Array:
                     {
-                        return false;
-                    }
-                    else if (array.Count == 1)
-                    {
-                        return Helpers.Booleanize(array.ChildrenTokens[0]);
-                    }
-                    else
-                    {
-                        return array.ChildrenTokens.Any(c => Helpers.Booleanize(c));
-                    }
-                };
-            case JTokenType.String:
-                return ((string)value!).Length > 0;
-            case JTokenType.Integer:
-                return ((long)value) != 0;
-            case JTokenType.Float:
-                return ((double)value) != 0.0;
-            case JTokenType.Object:
-                return ((JObject)value!).Count > 0;
-            case JTokenType.Boolean:
-                return (bool)value;
-            case JTokenType.Function:
-                return false;
-            default:
-                return false;
+                        JArray array = (JArray)value;
+                        if (array.Count == 0)
+                        {
+                            return false;
+                        }
+                        else if (array.Count == 1)
+                        {
+                            return Helpers.Booleanize(array.ChildrenTokens[0]);
+                        }
+                        else
+                        {
+                            return array.ChildrenTokens.Any(c => Helpers.Booleanize(c));
+                        }
+                    };
+                case JTokenType.String:
+                    return ((string)value!).Length > 0;
+                case JTokenType.Integer:
+                    return ((long)value) != 0;
+                case JTokenType.Float:
+                    return ((double)value) != 0.0;
+                case JTokenType.Object:
+                    return ((JObject)value!).Count > 0;
+                case JTokenType.Boolean:
+                    return (bool)value;
+                case JTokenType.Function:
+                    return false;
+                default:
+                    return false;
             }
         }
 
@@ -117,19 +119,46 @@ namespace Jsonata.Net.Native.Eval
             {
                 switch (token.Type)
                 {
-                case JTokenType.Integer:
-                    yield return (long)token;
-                    break;
-                case JTokenType.Float:
-                    yield return (decimal)token;
-                    break;
-                case JTokenType.Undefined:
-                    //just skip
-                    break;
-                default:
-                    throw new JsonataException("T0412", $"Argument {argIndex} of function {functionName} must be an array of numbers. Got {token.Type}");
+                    case JTokenType.Integer:
+                        yield return (long)token;
+                        break;
+                    case JTokenType.Float:
+                        yield return (decimal)token;
+                        break;
+                    case JTokenType.Undefined:
+                        //just skip
+                        break;
+                    default:
+                        throw new JsonataException("T0412", $"Argument {argIndex} of function {functionName} must be an array of numbers. Got {token.Type}");
                 }
             }
+        }
+
+        public static async Task<object?> ToGenericTaskAsync(this Task task)
+        {
+            await task;
+            var taskType = task.GetType();
+            if (!IsAssignableToGenericTaskType(taskType))
+            {
+                return null;
+            }
+
+            return task
+                .GetType()
+                .GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)!
+                .GetValue(task);
+        }
+
+        private static bool IsAssignableToGenericTaskType(Type type)
+        {
+            if (type.IsGenericType &&
+                type.GetGenericTypeDefinition() == typeof(Task<>) &&
+                type.GetGenericArguments()[0] != Type.GetType("System.Threading.Tasks.VoidTaskResult"))
+            {
+                return true;
+            }
+
+            return type.BaseType is not null && IsAssignableToGenericTaskType(type.BaseType);
         }
     }
 }
